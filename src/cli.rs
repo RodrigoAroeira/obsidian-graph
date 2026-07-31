@@ -14,7 +14,7 @@ pub struct Args {
 pub enum RendererType {
     #[value(name = "2D", alias = "twod")]
     TwoD,
-    #[value(name = "3D", alias = "threedd")]
+    #[value(name = "3D", alias = "threed")]
     ThreeD,
 }
 

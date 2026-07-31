@@ -85,10 +85,10 @@ impl Renderer for Renderer2D {
 
             if let Some(ref node_rc) = self.properties.dragged_node {
                 let mut node = node_rc.borrow_mut();
-                node.position.x =
-                    (self.properties.mouse_x / self.properties.zoom - self.properties.pan.width) as f32;
-                node.position.y =
-                    (self.properties.mouse_y / self.properties.zoom - self.properties.pan.height) as f32;
+                node.position.x = (self.properties.mouse_x / self.properties.zoom
+                    - self.properties.pan.width) as f32;
+                node.position.y = (self.properties.mouse_y / self.properties.zoom
+                    - self.properties.pan.height) as f32;
                 node.velocity = Vector3::new(0.0, 0.0, 0.0);
             }
 
@@ -136,7 +136,7 @@ impl Renderer for Renderer2D {
                     .is_some_and(|d| Rc::ptr_eq(d, node_rc))
                 {
                     HIGHLIGHT_COLOR
-                } else if !node.is_file {
+                } else if !node.exists {
                     MISSING_COLOR
                 } else {
                     NODE_COLOR

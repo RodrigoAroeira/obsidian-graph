@@ -137,7 +137,7 @@ impl Renderer for Renderer3D {
                     .is_some_and(|d| Rc::ptr_eq(d, node_rc))
                 {
                     HIGHLIGHT_COLOR
-                } else if !node.is_file {
+                } else if !node.exists {
                     MISSING_COLOR
                 } else {
                     NODE_COLOR
@@ -158,7 +158,11 @@ impl Renderer for Renderer3D {
                 (self.properties.font_size as f64 * self.properties.zoom).max(6.0) as i32;
             for (node_rc, screen, dist) in &screen_pos {
                 if *dist < label_threshold
-                    || self.properties.dragged_node.as_ref().is_some_and(|d| Rc::ptr_eq(d, node_rc))
+                    || self
+                        .properties
+                        .dragged_node
+                        .as_ref()
+                        .is_some_and(|d| Rc::ptr_eq(d, node_rc))
                 {
                     let node = node_rc.borrow();
                     let color = if self
@@ -168,7 +172,7 @@ impl Renderer for Renderer3D {
                         .is_some_and(|d| Rc::ptr_eq(d, node_rc))
                     {
                         HIGHLIGHT_COLOR
-                    } else if !node.is_file {
+                    } else if !node.exists {
                         MISSING_COLOR
                     } else {
                         NODE_COLOR

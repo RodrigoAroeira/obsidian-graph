@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use raylib::ffi;
 use raylib::prelude::*;
 
 use crate::graph::{Graph, Node};
@@ -13,6 +14,16 @@ use crate::renderer::{
 #[derive(Default)]
 pub struct Renderer3D {
     properties: RendererProperties,
+    cam: Option<Camera3D>,
+}
+
+impl Renderer3D {
+    pub fn new() -> Self {
+        Default::default()
+    }
+    fn prepare_for_hit_node(&mut self, cam: Camera3D) {
+        self.cam = Some(cam);
+    }
 }
 
 #[derive(Clone)]
@@ -45,10 +56,13 @@ impl Camera {
     }
 }
 
-impl Renderer3D {
-    pub fn new() -> Self {
-        Default::default()
+fn ray_plane_intersection(ray: Ray, origin: Vector3, normal: Vector3) -> Option<Vector3> {
+    let denom = ray.direction.dot(normal);
+    if denom.abs() <= 1e-6 {
+        return None;
     }
+    let t = (origin - ray.position).dot(normal) / denom;
+    Some(ray.position + ray.direction.scale(t))
 }
 
 impl Renderer for Renderer3D {
@@ -56,8 +70,21 @@ impl Renderer for Renderer3D {
         physics::apply_physics::<3>(graph, &self.properties);
     }
 
-    fn hit_node(&self, _graph: &Graph) -> Option<Rc<RefCell<Node>>> {
-        None
+    // self.cam is refreshed each frame by prepare_for_hit_node
+    // projection uses ffi::GetWorldToScreen because &self has no RaylibHandle.
+    fn hit_node(&self, graph: &Graph) -> Option<Rc<RefCell<Node>>> {
+        let cam = self.cam?;
+        let threshold = self.properties.node_radius as f64 * self.properties.zoom * 3.0;
+        find_nearest_node(
+            graph,
+            self.properties.mouse_x,
+            self.properties.mouse_y,
+            threshold,
+            |pos| {
+                let screen = unsafe { ffi::GetWorldToScreen(*pos, cam.into()) };
+                (screen.x as f64, screen.y as f64)
+            },
+        )
     }
 
     fn run(&mut self, graph: &mut Graph) {
@@ -115,22 +142,26 @@ impl Renderer for Renderer3D {
                 45.0,
             );
 
+            self.prepare_for_hit_node(cam);
+
             if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
-                let threshold = self.properties.node_radius as f64 * self.properties.zoom * 3.0;
-                self.properties.dragged_node = find_nearest_node(
-                    graph,
-                    self.properties.mouse_x,
-                    self.properties.mouse_y,
-                    threshold,
-                    |pos| {
-                        let screen = rl.get_world_to_screen(*pos, cam);
-                        (screen.x as f64, screen.y as f64)
-                    },
-                );
+                self.properties.dragged_node = self.hit_node(graph);
             }
 
             if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
                 self.properties.dragged_node = None;
+            }
+
+            if let Some(ref node_rc) = self.properties.dragged_node {
+                let mouse = Vector2::new(self.properties.mouse_x as f32, self.properties.mouse_y as f32);
+                let ray = rl.get_screen_to_world_ray(mouse, cam);
+                let forward = (camera.target - cam_pos).normalize();
+                let node_pos = node_rc.borrow().position;
+                if let Some(world) = ray_plane_intersection(ray, node_pos, forward) {
+                    let mut node = node_rc.borrow_mut();
+                    node.position = world;
+                    node.velocity = Vector3::new(0.0, 0.0, 0.0);
+                }
             }
 
             self.physics_step(graph);
@@ -346,5 +377,35 @@ mod tests {
             cam.orbit(2.0_f32.to_radians(), 1.0_f32.to_radians());
         }
         assert_close(cam.pos().distance(cam.target), cam.radius);
+    }
+
+    #[test]
+    fn ray_plane_intersection_hits_known_point() {
+        let ray = Ray {
+            position: Vector3::new(0.0, 0.0, 10.0),
+            direction: Vector3::new(0.0, 0.0, -1.0),
+        };
+        let hit = ray_plane_intersection(ray, Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        assert_vec_close(hit.unwrap(), Vector3::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn ray_plane_intersection_handles_offset_plane() {
+        let ray = Ray {
+            position: Vector3::new(5.0, 0.0, 10.0),
+            direction: Vector3::new(-1.0, 0.0, 0.0),
+        };
+        let hit = ray_plane_intersection(ray, Vector3::new(2.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+        assert_vec_close(hit.unwrap(), Vector3::new(2.0, 0.0, 10.0));
+    }
+
+    #[test]
+    fn ray_plane_intersection_parallel_returns_none() {
+        let ray = Ray {
+            position: Vector3::new(0.0, 0.0, 10.0),
+            direction: Vector3::new(1.0, 0.0, 0.0),
+        };
+        let hit = ray_plane_intersection(ray, Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 1.0));
+        assert!(hit.is_none());
     }
 }

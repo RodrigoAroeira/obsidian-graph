@@ -15,6 +15,36 @@ pub struct Renderer3D {
     properties: RendererProperties,
 }
 
+#[derive(Clone)]
+struct Camera {
+    dir: Vector3,
+    up: Vector3,
+    radius: f32,
+    target: Vector3,
+}
+
+impl Camera {
+    pub fn pos(&self) -> Vector3 {
+        self.dir.scale(self.radius) + self.target
+    }
+
+    pub fn orbit(&mut self, dyaw: f32, dpitch: f32) {
+        self.dir = self.dir.rotate_by_axis_angle(self.up, dyaw).normalize();
+        let right = self.dir.cross(self.up).normalize();
+        self.dir = self.dir.rotate_by_axis_angle(right, dpitch).normalize();
+        self.up = self.up.rotate_by_axis_angle(right, dpitch).normalize();
+    }
+
+    pub fn zoom(&mut self, factor: f32) {
+        self.radius *= factor;
+    }
+
+    pub fn move_screen(&mut self, dx: f32, dy: f32) {
+        let right = self.up.cross(self.dir).normalize();
+        self.target += right.scale(dx) + self.up.scale(dy);
+    }
+}
+
 impl Renderer3D {
     pub fn new() -> Self {
         Default::default()
@@ -40,11 +70,14 @@ impl Renderer for Renderer3D {
         self.properties.zoom = 1.0;
         self.properties.dragged_node = None;
 
-        let mut cam_yaw: f32 = 0.0;
-        let mut cam_pitch: f32 = -30.0_f32.to_radians();
-        let mut cam_dist: f32 = 1200.0;
-        let mut pan_x: f32 = 0.0;
-        let mut pan_y: f32 = 0.0;
+        let mut camera = Camera {
+            dir: Vector3::new(0.0, -0.5, 0.866),
+            up: Vector3::new(0.0, 0.866, 0.5),
+            radius: 1200.0,
+            target: Vector3::new(0.0, 0.0, 0.0),
+        };
+
+        let default = camera.clone();
 
         while !rl.window_should_close() {
             self.properties.screen_width = rl.get_screen_width() as f64;
@@ -53,34 +86,32 @@ impl Renderer for Renderer3D {
             self.properties.mouse_y = rl.get_mouse_y() as f64;
 
             let wheel = rl.get_mouse_wheel_move();
-            cam_dist *= 1.0 - wheel * 0.1;
+            if wheel != 0.0 {
+                camera.zoom(1.0 - wheel * 0.1);
+            }
 
             if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_RIGHT) {
                 let delta = rl.get_mouse_delta();
-                cam_yaw -= delta.x * 0.005;
-                cam_pitch = (cam_pitch + delta.y * 0.005)
-                    .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+                camera.orbit(-delta.x * 0.005, delta.y * 0.005);
             }
 
             if rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT)
                 && self.properties.dragged_node.is_none()
             {
-                let delta = rl.get_mouse_delta();
-                let speed = cam_dist * 0.001;
-                pan_x -= delta.x * speed;
-                pan_y += delta.y * speed;
+                let speed = camera.pos().length() * 0.001;
+                let delta = rl.get_mouse_delta() * speed;
+                camera.move_screen(-delta.x, delta.y);
             }
 
-            let cx = cam_dist * cam_pitch.cos() * cam_yaw.sin();
-            let cy = cam_dist * cam_pitch.sin();
-            let cz = cam_dist * cam_pitch.cos() * cam_yaw.cos();
+            if matches!(rl.get_key_pressed(), Some(KeyboardKey::KEY_R)) {
+                camera = default.clone();
+            }
 
-            let cam_pos = Vector3::new(cx + pan_x, cy.max(10.0) + pan_y, cz);
-
-            let camera = Camera3D::perspective(
+            let cam_pos = camera.pos();
+            let cam = Camera3D::perspective(
                 cam_pos,
-                Vector3::new(0.0, 0.0, 0.0),
-                Vector3::new(0.0, 1.0, 0.0),
+                camera.target,
+                camera.up,
                 45.0,
             );
 
@@ -92,30 +123,31 @@ impl Renderer for Renderer3D {
                     self.properties.mouse_y,
                     threshold,
                     |pos| {
-                        let screen = rl.get_world_to_screen(*pos, camera);
+                        let screen = rl.get_world_to_screen(*pos, cam);
                         (screen.x as f64, screen.y as f64)
                     },
                 );
             }
+
             if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
                 self.properties.dragged_node = None;
             }
 
             self.physics_step(graph);
 
-            let label_threshold = cam_dist * 0.7;
+            let label_threshold = cam_pos.length() * 0.7;
             let mut screen_pos: Vec<(Rc<RefCell<Node>>, Vector2, f32)> = Vec::new();
             for node_rc in &graph.nodes {
                 let p = node_rc.borrow().position;
                 let world = p;
-                let screen = rl.get_world_to_screen(world, camera);
+                let screen = rl.get_world_to_screen(world, cam);
                 let dist = world.distance(cam_pos);
                 screen_pos.push((node_rc.clone(), screen, dist));
             }
 
             let mut d = rl.begin_drawing(&thread);
             d.clear_background(BG);
-            let mut d3 = d.begin_mode3D(camera);
+            let mut d3 = d.begin_mode3D(cam);
 
             for node_rc in &graph.nodes {
                 let node = node_rc.borrow();
@@ -193,5 +225,126 @@ impl Renderer for Renderer3D {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_camera() -> Camera {
+        Camera {
+            dir: Vector3::new(0.0, -0.5, 0.866),
+            up: Vector3::new(0.0, 0.866, 0.5),
+            radius: 1200.0,
+            target: Vector3::new(0.0, 0.0, 0.0),
+        }
+    }
+
+    fn assert_close(a: f32, b: f32) {
+        let tol = 1e-3 * b.abs().max(1.0);
+        assert!((a - b).abs() <= tol, "expected {a} ~= {b}");
+    }
+
+    fn assert_vec_close(a: Vector3, b: Vector3) {
+        let tol = 1e-3 * b.length().max(1.0);
+        let d = a - b;
+        assert!(d.length() <= tol, "expected {a:?} ~= {b:?}");
+    }
+
+    #[test]
+    fn initial_pos_matches_expected() {
+        let cam = default_camera();
+        assert_vec_close(cam.pos(), Vector3::new(0.0, -600.0, 1039.2305));
+        assert_close(cam.pos().distance(cam.target), cam.radius);
+    }
+
+    #[test]
+    fn orbit_keeps_radius() {
+        let mut cam = default_camera();
+        for _ in 0..50 {
+            cam.orbit(3.0_f32.to_radians(), 1.5_f32.to_radians());
+        }
+        assert_close(cam.pos().distance(cam.target), cam.radius);
+    }
+
+    #[test]
+    fn pitch_works_after_full_yaw() {
+        let mut cam = default_camera();
+        for _ in 0..90 {
+            cam.orbit(1.0_f32.to_radians(), 0.0);
+        }
+        for _ in 0..90 {
+            cam.orbit(0.0, 1.0_f32.to_radians());
+        }
+        let height = (cam.pos().y - cam.target.y).abs();
+        assert!(height > cam.radius * 0.5, "pitch dead after yaw: height {height}");
+        assert_close(cam.pos().distance(cam.target), cam.radius);
+    }
+
+    #[test]
+    fn orbit_crosses_pole_smoothly() {
+        let mut cam = default_camera();
+        let step = 2.0_f32.to_radians();
+        let mut prev_pos = cam.pos();
+        let mut prev_up = cam.up;
+        for _ in 0..70 {
+            cam.orbit(0.0, step);
+            let pos = cam.pos();
+            assert!(prev_pos.distance(pos) < cam.radius * 0.1, "position jump");
+            assert!(prev_up.distance(cam.up) < 0.1, "up flip");
+            assert!(cam.up.dot(cam.dir).abs() < 1e-3, "up no longer perpendicular");
+            prev_pos = pos;
+            prev_up = cam.up;
+        }
+        assert_close(cam.pos().distance(cam.target), cam.radius);
+    }
+
+    #[test]
+    fn up_stays_perpendicular_to_dir() {
+        let mut cam = default_camera();
+        for _ in 0..100 {
+            cam.orbit(2.0_f32.to_radians(), 1.0_f32.to_radians());
+        }
+        assert!(cam.up.dot(cam.dir).abs() < 1e-3);
+    }
+
+    #[test]
+    fn zoom_scales_radius_only() {
+        let mut cam = default_camera();
+        cam.target = Vector3::new(10.0, -20.0, 30.0);
+        let before = cam.pos();
+        cam.zoom(0.5);
+        assert_close(cam.radius, 600.0);
+        let expected = Vector3::new(
+            cam.target.x + (before.x - cam.target.x) * 0.5,
+            cam.target.y + (before.y - cam.target.y) * 0.5,
+            cam.target.z + (before.z - cam.target.z) * 0.5,
+        );
+        assert_vec_close(cam.pos(), expected);
+        assert_close(cam.pos().distance(cam.target), cam.radius);
+    }
+
+    #[test]
+    fn move_screen_moves_along_screen_axes() {
+        let mut cam = default_camera();
+        let right = cam.up.cross(cam.dir).normalize();
+        let before_target = cam.target;
+        let before_pos = cam.pos();
+        cam.move_screen(3.0, -2.0);
+        let expected = before_target + right.scale(3.0) + cam.up.scale(-2.0);
+        assert_vec_close(cam.target, expected);
+        assert_close(cam.pos().distance(cam.target), cam.radius);
+        assert_vec_close(cam.pos() - before_pos, cam.target - before_target);
+    }
+
+    #[test]
+    fn orbit_after_pan_keeps_radius() {
+        let mut cam = default_camera();
+        cam.move_screen(50.0, -30.0);
+        for _ in 0..60 {
+            cam.orbit(2.0_f32.to_radians(), 1.0_f32.to_radians());
+        }
+        assert_close(cam.pos().distance(cam.target), cam.radius);
     }
 }

@@ -6,7 +6,7 @@ use clap::Parser;
 pub struct Args {
     #[arg(default_value = default_vault_path())]
     pub vault_path: PathBuf,
-    #[arg(short, long, default_value = "2D", ignore_case = true)]
+    #[arg(short, long, default_value = "3D", ignore_case = true)]
     pub renderer: RendererType,
 }
 

@@ -110,7 +110,11 @@ mod tests {
         let vault = Vault::scan(root)?;
         let graph = build_graph(&vault)?;
 
-        let note = graph.nodes.iter().find(|n| n.borrow().name == "Note").unwrap();
+        let note = graph
+            .nodes
+            .iter()
+            .find(|n| n.borrow().name == "Note")
+            .unwrap();
         assert!(note.borrow().exists);
 
         let missing = graph

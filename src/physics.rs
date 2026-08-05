@@ -105,8 +105,7 @@ pub fn apply_physics<const N: usize>(graph: &mut Graph, params: &RendererPropert
 
         node.velocity.x *= params.damping as f32;
         node.velocity.y *= params.damping as f32;
-        let mut speed_sq =
-            node.velocity.x * node.velocity.x + node.velocity.y * node.velocity.y;
+        let mut speed_sq = node.velocity.x * node.velocity.x + node.velocity.y * node.velocity.y;
         if N == 3 {
             node.velocity.z *= params.damping as f32;
             speed_sq += node.velocity.z * node.velocity.z;

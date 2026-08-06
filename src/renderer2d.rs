@@ -1,32 +1,35 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use anyhow::Result;
 use raylib::prelude::*;
 
 use crate::graph::{Graph, Node};
 use crate::physics;
 use crate::renderer::{
     BG, Dim, EDGE_COLOR, HIGHLIGHT_COLOR, MISSING_COLOR, NODE_COLOR, Renderer, RendererProperties,
-    TEXT_COLOR,
+    Spawn, TEXT_COLOR,
 };
+use crate::vault::Vault;
 
-#[derive(Default)]
 pub struct Renderer2D {
     properties: RendererProperties,
+    spawn: Spawn,
 }
 
 impl Renderer2D {
     pub fn new() -> Self {
-        Default::default()
+        Self {
+            properties: Default::default(),
+            spawn: Default::default(),
+        }
     }
-}
 
-impl Renderer for Renderer2D {
-    fn physics_step(&self, graph: &mut Graph) {
+    pub fn physics_step(&self, graph: &mut Graph) {
         physics::apply_physics::<2>(graph, &self.properties);
     }
 
-    fn hit_node(&self, graph: &Graph) -> Option<Rc<RefCell<Node>>> {
+    pub fn hit_node(&self, graph: &Graph) -> Option<Rc<RefCell<Node>>> {
         let threshold = self.properties.node_radius as f64 * self.properties.zoom + 5.0;
         crate::renderer::find_nearest_node(
             graph,
@@ -40,18 +43,23 @@ impl Renderer for Renderer2D {
             },
         )
     }
+}
 
-    fn run(&mut self, graph: &mut Graph) {
+impl Renderer for Renderer2D {
+    fn run(&mut self, vault: &Vault) -> Result<()> {
         let (mut rl, thread) = raylib::init()
             .size(1200, 800)
             .resizable()
             .title("obsidian-graph")
             .build();
 
+        let mut graph = vault.build_graph()?;
+
         self.properties.pan = Default::default();
         self.properties.zoom = 1.0;
         self.properties.dragged_node = None;
         self.properties.panning = false;
+        self.spawn.reveal_all(&graph);
 
         while !rl.window_should_close() {
             self.properties.screen_width = rl.get_screen_width() as f64;
@@ -67,7 +75,7 @@ impl Renderer for Renderer2D {
             }
 
             if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
-                if let Some(node) = self.hit_node(graph) {
+                if let Some(node) = self.hit_node(&graph) {
                     self.properties.dragged_node = Some(node);
                 } else {
                     self.properties.panning = true;
@@ -81,6 +89,22 @@ impl Renderer for Renderer2D {
             if rl.is_mouse_button_released(MouseButton::MOUSE_BUTTON_LEFT) {
                 self.properties.dragged_node = None;
                 self.properties.panning = false;
+            }
+
+            if rl.is_key_pressed(KeyboardKey::KEY_L) {
+                match vault.rebuild_graph() {
+                    Ok(fresh) => {
+                        graph = fresh;
+                        self.spawn.reveal_all(&graph);
+                        self.properties.dragged_node = None;
+                    }
+                    Err(e) => eprintln!("reload failed: {e}"),
+                }
+            }
+
+            if rl.is_key_pressed(KeyboardKey::KEY_P) {
+                self.spawn.reset_from(&graph);
+                self.properties.dragged_node = None;
             }
 
             if let Some(ref node_rc) = self.properties.dragged_node {
@@ -101,7 +125,10 @@ impl Renderer for Renderer2D {
                 };
             }
 
-            self.physics_step(graph);
+            let dt = rl.get_frame_time();
+            self.spawn.advance(dt as f64);
+
+            self.physics_step(&mut graph);
 
             let mut d = rl.begin_drawing(&thread);
             d.clear_background(BG);
@@ -110,10 +137,16 @@ impl Renderer for Renderer2D {
             let p1 = self.properties.pan.height;
             for node_rc in &graph.nodes {
                 let node = node_rc.borrow();
+                if !node.appeared {
+                    continue;
+                }
                 let sx = (node.position.x as f64 + p0) * self.properties.zoom;
                 let sy = (node.position.y as f64 + p1) * self.properties.zoom;
                 for edge in &node.edges {
                     let target = edge.target.borrow();
+                    if !target.appeared {
+                        continue;
+                    }
                     let tx = (target.position.x as f64 + p0) * self.properties.zoom;
                     let ty = (target.position.y as f64 + p1) * self.properties.zoom;
                     d.draw_line_ex(
@@ -127,6 +160,9 @@ impl Renderer for Renderer2D {
 
             for node_rc in &graph.nodes {
                 let node = node_rc.borrow();
+                if !node.appeared {
+                    continue;
+                }
                 let x = (node.position.x as f64 + p0) * self.properties.zoom;
                 let y = (node.position.y as f64 + p1) * self.properties.zoom;
                 let color = if self
@@ -158,5 +194,7 @@ impl Renderer for Renderer2D {
                 );
             }
         }
+
+        Ok(())
     }
 }

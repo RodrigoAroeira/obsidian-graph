@@ -1,8 +1,12 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::graph::Graph;
+use anyhow::Result;
 use raylib::prelude::{Color, Vector3};
+
+use crate::graph::{Graph, Node};
+use crate::vault::Vault;
 
 pub const BG: Color = Color::new(30, 30, 30, 255);
 pub const NODE_COLOR: Color = Color::new(100, 150, 255, 255);
@@ -30,7 +34,7 @@ pub struct RendererProperties {
     pub node_radius: f32,
     pub font_size: i32,
     pub zoom: f64,
-    pub dragged_node: Option<Rc<RefCell<crate::graph::Node>>>,
+    pub dragged_node: Option<Rc<RefCell<Node>>>,
     pub panning: bool,
     pub pan: Dim,
     pub pan_start: Dim,
@@ -76,13 +80,17 @@ pub fn find_nearest_node<F>(
     my: f64,
     threshold: f64,
     to_screen: F,
-) -> Option<Rc<RefCell<crate::graph::Node>>>
+) -> Option<Rc<RefCell<Node>>>
 where
     F: Fn(&Vector3) -> (f64, f64),
 {
-    let mut closest: Option<(Rc<RefCell<crate::graph::Node>>, f64)> = None;
+    let mut closest: Option<(Rc<RefCell<Node>>, f64)> = None;
     for node_rc in &graph.nodes {
-        let pos = node_rc.borrow().position;
+        let node = node_rc.borrow();
+        if !node.appeared {
+            continue;
+        }
+        let pos = node.position;
         let (sx, sy) = to_screen(&pos);
         let dx = mx - sx;
         let dy = my - sy;
@@ -95,7 +103,121 @@ where
 }
 
 pub trait Renderer {
-    fn physics_step(&self, graph: &mut Graph);
-    fn hit_node(&self, graph: &Graph) -> Option<Rc<RefCell<crate::graph::Node>>>;
-    fn run(&mut self, graph: &mut Graph);
+    fn run(&mut self, vault: &Vault) -> Result<()>;
+}
+
+#[derive(Default)]
+pub struct Spawn {
+    queue: VecDeque<Rc<RefCell<Node>>>,
+    rate: f64,
+    accumulator: f64,
+}
+
+impl Spawn {
+    pub fn from_graph(graph: &Graph) -> Self {
+        let mut nodes: Vec<Rc<RefCell<Node>>> = graph.nodes.to_vec();
+        for node_rc in &nodes {
+            node_rc.borrow_mut().appeared = false;
+        }
+        nodes.sort_by(|a, b| {
+            let a = a.borrow();
+            let b = b.borrow();
+            match (a.date_created, b.date_created) {
+                (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.name.cmp(&b.name)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.name.cmp(&b.name),
+            }
+        });
+        let rate = nodes.len() as f64 / 3.0;
+        Self {
+            queue: nodes.into(),
+            rate,
+            accumulator: 0.0,
+        }
+    }
+
+    pub fn reveal_all(&mut self, graph: &Graph) {
+        for node_rc in &graph.nodes {
+            node_rc.borrow_mut().appeared = true;
+        }
+        self.queue.clear();
+        self.rate = 0.0;
+        self.accumulator = 0.0;
+    }
+
+    pub fn reset_from(&mut self, graph: &Graph) {
+        *self = Self::from_graph(graph);
+    }
+
+    pub fn advance(&mut self, dt: f64) {
+        self.accumulator += dt * self.rate;
+        while self.accumulator >= 1.0 {
+            match self.queue.pop_front() {
+                Some(node) => node.borrow_mut().appeared = true,
+                None => break,
+            }
+            self.accumulator -= 1.0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::Spawn;
+    use crate::vault::Vault;
+
+    #[test]
+    fn missing_notes_spawn_last() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "[[Missing]]").unwrap();
+        let vault = Vault::scan(dir.path()).unwrap();
+        let graph = vault.build_graph().unwrap();
+
+        let mut spawn = Spawn::from_graph(&graph);
+        for _ in 0..1000 {
+            spawn.advance(0.1);
+            if graph
+                .nodes
+                .iter()
+                .any(|n| n.borrow().name == "a" && n.borrow().appeared)
+            {
+                break;
+            }
+        }
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|n| n.borrow().name == "a" && n.borrow().appeared),
+            "real note should appear"
+        );
+        assert!(
+            !graph
+                .nodes
+                .iter()
+                .any(|n| n.borrow().name == "Missing" && n.borrow().appeared),
+            "missing note should appear after real notes"
+        );
+
+        spawn.advance(10.0);
+        assert!(graph.nodes.iter().all(|n| n.borrow().appeared));
+    }
+
+    #[test]
+    fn reveal_all_shows_everything_immediately() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "[[Missing]]").unwrap();
+        let vault = Vault::scan(dir.path()).unwrap();
+        let graph = vault.build_graph().unwrap();
+
+        let mut spawn = Spawn::default();
+        spawn.reveal_all(&graph);
+        assert!(graph.nodes.iter().all(|n| n.borrow().appeared));
+
+        spawn.advance(10.0);
+        assert!(graph.nodes.iter().all(|n| n.borrow().appeared));
+    }
 }
